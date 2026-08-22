@@ -186,6 +186,7 @@
 
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-database-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
 <script>
 /* ================= Firebase-backed storage (replaces the Claude-artifact-only window.storage) ================= */
 const firebaseConfig = {
@@ -200,6 +201,12 @@ const firebaseConfig = {
 };
 firebase.initializeApp(firebaseConfig);
 const _fbDB = firebase.database();
+
+// Sign in anonymously so the database rules (which require auth != null) allow this app through,
+// while blocking anyone hitting the database directly without running the app.
+const _fbAuthReady = firebase.auth().signInAnonymously().catch(function (e) {
+  console.error("Firebase anonymous sign-in failed:", e);
+});
 
 // Firebase Realtime Database keys can't contain '.', '#', '$', '[', ']', or '/'
 function _fbSafeKey(key) {
@@ -217,6 +224,7 @@ window.storage = {
         return raw !== null ? { key, value: raw, shared: false } : null;
       } catch (e) { return null; }
     }
+    await _fbAuthReady;
     const snap = await _fbDB.ref("shared/" + _fbSafeKey(key)).get();
     return snap.exists() ? { key, value: snap.val(), shared: true } : null;
   },
@@ -225,6 +233,7 @@ window.storage = {
       try { localStorage.setItem("local:" + key, value); } catch (e) {}
       return { key, value, shared: false };
     }
+    await _fbAuthReady;
     await _fbDB.ref("shared/" + _fbSafeKey(key)).set(value);
     return { key, value, shared: true };
   }
