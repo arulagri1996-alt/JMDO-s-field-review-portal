@@ -8,6 +8,8 @@
 <meta name="theme-color" content="#23320F" />
 <link rel="apple-touch-icon" href="/icons/icon-192.png" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700;9..144,800&family=Inter:wght@400;500;600;700;800&display=swap');
 
@@ -114,6 +116,12 @@
   .btn-ghost {
     background: none; border: none; color: #B9840E; font-weight: 700; font-size: 12px;
     cursor: pointer; padding: 4px 0; display: inline-flex; align-items: center; gap: 4px;
+  }
+
+  @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.35; } 100% { opacity: 1; } }
+  .notice-bad {
+    background: #FBEAE8; border: 1px solid #E3A79E; color: #8A2E24;
+    border-radius: 10px; padding: 10px 12px; font-size: 12.5px; line-height: 1.4;
   }
 
   .pill-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
@@ -241,6 +249,116 @@ window.storage = {
     return { key, value, shared: true };
   }
 };
+
+/* ================= Live Location Tracking ================= */
+function startLiveTracking() {
+  if (!navigator.geolocation) {
+    STATE.liveTrackError = "This device/browser doesn't support location capture.";
+    render();
+    return;
+  }
+  STATE.liveTrackActive = true;
+  STATE.liveTrackError = "";
+  STATE.liveTrackLastSentAt = 0;
+  render();
+  STATE.liveTrackWatchId = navigator.geolocation.watchPosition(
+    async (pos) => {
+      const now = Date.now();
+      if (STATE.liveTrackLastSentAt && now - STATE.liveTrackLastSentAt < 25000) return; // throttle ~25s
+      STATE.liveTrackLastSentAt = now;
+      try {
+        await _fbAuthReady;
+        const profile = STATE.profiles[STATE.name] || {};
+        await _fbDB.ref("shared/live/" + _fbSafeKey(STATE.name)).set({
+          name: STATE.name,
+          region: profile.region || "",
+          moHQ: profile.moHQ || "",
+          jmdoHQ: profile.jmdoHQ || "",
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          accuracy: pos.coords.accuracy,
+          updatedAt: now,
+        });
+      } catch (e) { /* ignore transient write errors, next tick retries */ }
+      render();
+    },
+    (err) => {
+      const messages = {
+        1: "Location permission denied. Please allow location access for this site, then try again.",
+        2: "Location unavailable right now — weak GPS/network signal.",
+        3: "Location request timed out. Try again outdoors with a clear sky view.",
+      };
+      STATE.liveTrackError = messages[err.code] || "Could not get your location.";
+      render();
+    },
+    { enableHighAccuracy: true, maximumAge: 15000, timeout: 20000 }
+  );
+}
+function stopLiveTracking() {
+  if (STATE.liveTrackWatchId != null && navigator.geolocation) {
+    navigator.geolocation.clearWatch(STATE.liveTrackWatchId);
+  }
+  STATE.liveTrackWatchId = null;
+  STATE.liveTrackActive = false;
+  STATE.liveTrackError = "";
+  _fbAuthReady.then(() => _fbDB.ref("shared/live/" + _fbSafeKey(STATE.name)).remove()).catch(() => {});
+  render();
+}
+function wireLiveTrackingHandlers() {
+  const $ = (id) => document.getElementById(id);
+  $("start-live-tracking")?.addEventListener("click", () => startLiveTracking());
+  $("stop-live-tracking")?.addEventListener("click", () => stopLiveTracking());
+}
+function maybeAttachLiveListener() {
+  if (STATE.liveListenerAttached) return;
+  if (!(STATE.role === "rm" && STATE.rmTab === "live")) return;
+  STATE.liveListenerAttached = true;
+  _fbAuthReady.then(() => {
+    _fbDB.ref("shared/live").on("value", (snap) => {
+      STATE.liveLocations = snap.val() || {};
+      render();
+    });
+  }).catch(() => {});
+}
+let _leafletMap = null, _leafletMarkers = {};
+function updateLiveMapIfVisible() {
+  const el = document.getElementById("live-map");
+  if (!el || typeof L === "undefined") return;
+  const now = Date.now();
+  const rows = Object.entries(STATE.liveLocations || {}).filter(
+    ([, r]) => now - (r.updatedAt || 0) < 120000
+  );
+  if (!_leafletMap) {
+    _leafletMap = L.map(el).setView([10.9, 78.4], 7); // Tamil Nadu-ish default center
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19, attribution: "© OpenStreetMap contributors",
+    }).addTo(_leafletMap);
+  } else {
+    // el may have been recreated by innerHTML re-render; reattach the map to the fresh node
+    if (_leafletMap.getContainer() !== el) {
+      _leafletMap.remove();
+      _leafletMap = L.map(el).setView([10.9, 78.4], 7);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19, attribution: "© OpenStreetMap contributors",
+      }).addTo(_leafletMap);
+      _leafletMarkers = {};
+    }
+  }
+  const seen = new Set();
+  rows.forEach(([key, r]) => {
+    seen.add(key);
+    if (_leafletMarkers[key]) {
+      _leafletMarkers[key].setLatLng([r.lat, r.lng]);
+    } else {
+      _leafletMarkers[key] = L.marker([r.lat, r.lng]).addTo(_leafletMap);
+    }
+    _leafletMarkers[key].bindPopup(`<b>${r.name || ""}</b><br>${r.moHQ || ""} ${r.jmdoHQ || ""}`);
+  });
+  Object.keys(_leafletMarkers).forEach((key) => {
+    if (!seen.has(key)) { _leafletMap.removeLayer(_leafletMarkers[key]); delete _leafletMarkers[key]; }
+  });
+  setTimeout(() => { try { _leafletMap.invalidateSize(); } catch (e) {} }, 50);
+}
 </script>
 
 <script>
@@ -484,6 +602,14 @@ let STATE = {
   rmQuery: "",
   rmTargetForm: { region: "", moHQ: "", jmdoHQ: "", name: "", qty: "" }, // Sales Order monthly target — same cascading fields as SPCM/Soil
   expandedJmdo: null,
+
+  // ---- Live Location Tracking (opt-in, JMDO-controlled) ----
+  liveTrackActive: false,
+  liveTrackWatchId: null,
+  liveTrackLastSentAt: 0,
+  liveTrackError: "",
+  liveLocations: {},        // { safeName: {name,region,moHQ,jmdoHQ,lat,lng,accuracy,updatedAt} } — RM/MO side, from realtime listener
+  liveListenerAttached: false,
 
   // ---- MO/MDO Review → Sales Order → "Add Sales Order" (MO enters/records an order directly) ----
   showRmSalesForm: false,
@@ -824,6 +950,9 @@ function render() {
     rmViewHTML()
   ) + `<footer class="foot">Data on this portal is shared — every JMDO and Regional Manager using this link sees the same live records.</footer>`;
   attachHandlers();
+  wireLiveTrackingHandlers();
+  maybeAttachLiveListener();
+  updateLiveMapIfVisible();
 }
 
 function headerHTML() {
@@ -1185,12 +1314,14 @@ function jmdoViewHTML() {
       <button type="button" class="pill ${STATE.jmdoTab === "spcm" ? "active" : ""}" data-jmdo-tab="spcm">🎯 SPCM Target/Ach</button>
       <button type="button" class="pill ${STATE.jmdoTab === "soil" ? "active" : ""}" data-jmdo-tab="soil">🧪 Soil Sample</button>
       <button type="button" class="pill ${STATE.jmdoTab === "mdprog" ? "active" : ""}" data-jmdo-tab="mdprog">🎯 MD Programmes</button>
+      <button type="button" class="pill ${STATE.jmdoTab === "tracking" ? "active" : ""}" data-jmdo-tab="tracking">📍 Live Tracking</button>
     </div>
 
     ${STATE.jmdoTab === "attendance" ? attendanceJmdoCardHTML(profile) :
       STATE.jmdoTab === "spcm" ? spcmJmdoCardHTML(profile) :
       STATE.jmdoTab === "soil" ? soilJmdoCardHTML(profile) :
-      STATE.jmdoTab === "mdprog" ? mdProgJmdoCardHTML(profile) : `
+      STATE.jmdoTab === "mdprog" ? mdProgJmdoCardHTML(profile) :
+      STATE.jmdoTab === "tracking" ? liveTrackingJmdoCardHTML(profile) : `
 
     <div class="card">
       <button type="button" class="accordion-btn" id="toggle-profile">
@@ -1444,6 +1575,40 @@ function soilJmdoCardHTML(profile) {
       ${locked ? `<p style="font-size:11px;color:#8A7A50;margin:0 0 10px;">Your annual Soil Sample targets are fixed for ${currentYearKey()} until the ${nextYearKey()} cycle opens. You can still update your Achieved counts anytime.</p>` : ""}
       <button class="btn-primary" id="save-soil-self">${rec.freeTarget != null ? "Update Achieved" : "Save"} my Soil Sample target / achievement</button>`; })()}
     </div>`;
+}
+
+/* ---------- Live Location Tracking — JMDO self card (opt-in, JMDO fully controls it) ---------- */
+function liveTrackingJmdoCardHTML(profile) {
+  const active = STATE.liveTrackActive;
+  const err = STATE.liveTrackError;
+  const lastSent = STATE.liveTrackLastSentAt;
+  return `
+    <div class="card">
+      <div style="font-weight:800;font-size:14.5px;color:#22300E;margin-bottom:10px;">📍 Live Location Tracking</div>
+      <p style="font-size:12.5px;color:#5B6B45;line-height:1.5;margin:0 0 14px;">
+        This is optional and fully in your control. When turned on, your live location is visible to your MO/MDO
+        and Regional Manager on the Live Map, updating roughly every 30 seconds, for as long as you keep it on and
+        this page open. Turn it off anytime — nothing is tracked when it's off, and no history is kept after you stop.
+      </p>
+      ${err ? `<div class="notice-bad" style="margin-bottom:12px;">⚠️ ${err}</div>` : ""}
+      ${active ? `
+        <div style="display:flex;align-items:center;gap:8px;background:#EAF3DC;border:1px solid #C9DCA6;border-radius:12px;padding:12px 14px;margin-bottom:14px;">
+          <span style="width:10px;height:10px;border-radius:50%;background:#5D8A22;display:inline-block;animation:pulse 1.6s infinite;"></span>
+          <span style="font-size:13px;font-weight:700;color:#3E5C17;">Tracking is ON</span>
+          <span style="font-size:11.5px;color:#6B7A50;margin-left:auto;">${lastSent ? "Last sent " + timeAgoShort(lastSent) : "Sending first location…"}</span>
+        </div>
+        <button class="btn-ghost" id="stop-live-tracking" style="width:100%;justify-content:center;border:1.5px solid #C0473F;border-radius:12px;padding:12px 0;color:#C0473F;">⏹ Stop tracking</button>
+      ` : `
+        <button class="btn-primary" id="start-live-tracking" style="width:100%;">▶ Start work tracking</button>
+      `}
+    </div>`;
+}
+function timeAgoShort(ts) {
+  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (s < 60) return s + "s ago";
+  const m = Math.round(s / 60);
+  if (m < 60) return m + "m ago";
+  return Math.round(m / 60) + "h ago";
 }
 
 /* ---------- MD Programmes — JMDO self-entry card ---------- */
@@ -1820,12 +1985,13 @@ function rmViewHTML() {
       <button type="button" class="pill ${STATE.rmTab === "spcm" ? "active" : ""}" data-rm-tab="spcm">🎯 SPCM Target/Ach</button>
       <button type="button" class="pill ${STATE.rmTab === "soil" ? "active" : ""}" data-rm-tab="soil">🧪 Soil Sample</button>
       <button type="button" class="pill ${STATE.rmTab === "mdprog" ? "active" : ""}" data-rm-tab="mdprog">🎯 MD Programmes</button>
+      <button type="button" class="pill ${STATE.rmTab === "live" ? "active" : ""}" data-rm-tab="live">🛰️ Live Map</button>
       <button type="button" class="pill ${STATE.rmTab === "roster" ? "active" : ""}" data-rm-tab="roster">👥 Manage JMDOs</button>
       <button type="button" class="pill ${STATE.rmTab === "momdo" ? "active" : ""}" data-rm-tab="momdo">🧑‍💼 Manage MO/MDO</button>
       <button type="button" class="pill ${STATE.rmTab === "catalog" ? "active" : ""}" data-rm-tab="catalog">🏷️ Products &amp; Dealers</button>
     </div>
 
-    ${STATE.rmTab === "dashboard" ? dashboardHTML() : STATE.rmTab === "attendance" ? attendanceReviewHTML() : STATE.rmTab === "spcm" ? spcmReviewHTML() : STATE.rmTab === "soil" ? soilReviewHTML() : STATE.rmTab === "mdprog" ? mdProgReviewHTML() : STATE.rmTab === "roster" ? rosterManageHTML() : STATE.rmTab === "momdo" ? momdoManageHTML() : STATE.rmTab === "catalog" ? catalogManageHTML() : `
+    ${STATE.rmTab === "dashboard" ? dashboardHTML() : STATE.rmTab === "attendance" ? attendanceReviewHTML() : STATE.rmTab === "spcm" ? spcmReviewHTML() : STATE.rmTab === "soil" ? soilReviewHTML() : STATE.rmTab === "mdprog" ? mdProgReviewHTML() : STATE.rmTab === "live" ? liveMapReviewHTML() : STATE.rmTab === "roster" ? rosterManageHTML() : STATE.rmTab === "momdo" ? momdoManageHTML() : STATE.rmTab === "catalog" ? catalogManageHTML() : `
 
     <div class="card">
       <div class="field"><label class="field-label">Your name (as MDO / MO)</label>
@@ -2435,6 +2601,37 @@ function soilReviewHTML() {
 }
 
 /* ---------- MD Programmes — MO/MDO review + once-per-month target entry ---------- */
+/* ---------- Live Map — RM/MO view (real-time positions of JMDOs who opted in) ---------- */
+function liveMapReviewHTML() {
+  const rows = Object.values(STATE.liveLocations || {}).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  const now = Date.now();
+  const activeRows = rows.filter(r => now - (r.updatedAt || 0) < 120000); // treat >2 min stale as offline
+  return `
+    <div class="card">
+      <div style="font-weight:800;font-size:14.5px;color:#22300E;margin-bottom:8px;">🛰️ Live Map</div>
+      <p style="font-size:12px;color:#6B7A50;margin:0 0 12px;">
+        Shows JMDOs who have turned on Live Tracking themselves, right now. Pins disappear automatically once
+        someone stops tracking or goes quiet for more than 2 minutes.
+      </p>
+      <div id="live-map" style="width:100%;height:320px;border-radius:14px;overflow:hidden;border:1px solid #D9D2B7;margin-bottom:14px;"></div>
+      ${activeRows.length === 0 ? `<div class="empty-note"><div class="ic">📭</div>No one is currently tracking.</div>` : `
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          ${activeRows.map(r => `
+            <div style="display:flex;align-items:center;gap:10px;background:#fff;border:1px solid #EEE7CE;border-radius:10px;padding:9px 12px;">
+              <span style="width:9px;height:9px;border-radius:50%;background:#5D8A22;display:inline-block;flex:none;animation:pulse 1.6s infinite;"></span>
+              <div style="flex:1;min-width:0;">
+                <div style="font-weight:700;font-size:13px;color:#23320F;">${esc(r.name)}</div>
+                <div style="font-size:11px;color:#8A7A50;">${esc(r.moHQ || "")}${r.moHQ && r.jmdoHQ ? " · " : ""}${esc(r.jmdoHQ || "")}</div>
+              </div>
+              <div style="font-size:11px;color:#6B7A50;flex:none;">${timeAgoShort(r.updatedAt)}</div>
+              <a href="https://www.google.com/maps?q=${r.lat},${r.lng}" target="_blank" rel="noopener" style="color:#3E5C17;font-weight:700;font-size:12px;flex:none;">open ↗</a>
+            </div>
+          `).join("")}
+        </div>
+      `}
+    </div>`;
+}
+
 function mdProgReviewHTML() {
   const form = STATE.rmMdProgForm;
   const q = (STATE.rmMdProgSearch || "").trim().toLowerCase();
@@ -2561,6 +2758,7 @@ function attachHandlers() {
   const $ = (id) => document.getElementById(id);
 
   $("btn-switch-role")?.addEventListener("click", async () => {
+    if (STATE.liveTrackActive) stopLiveTracking();
     STATE.role = null; STATE.name = ""; STATE.jmdoStep = "name"; STATE.showProfileEdit = false; STATE.showTargets = false;
     await saveDevice(null);
     render();
@@ -3628,6 +3826,12 @@ function renderKeepFocus(id) {
 }
 
 boot();
+
+window.addEventListener("beforeunload", () => {
+  if (STATE.liveTrackActive && STATE.name) {
+    try { _fbDB.ref("shared/live/" + _fbSafeKey(STATE.name)).remove(); } catch (e) {}
+  }
+});
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {
