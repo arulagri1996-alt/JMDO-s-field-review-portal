@@ -603,6 +603,11 @@ let STATE = {
   rmTargetForm: { region: "", moHQ: "", jmdoHQ: "", name: "", qty: "" }, // Sales Order monthly target — same cascading fields as SPCM/Soil
   expandedJmdo: null,
 
+  // ---- Manager (MO/MDO/RM) role access PIN gate ----
+  pinGateOpen: false,
+  pinInput: "",
+  pinError: "",
+
   // ---- Live Location Tracking (opt-in, JMDO-controlled) ----
   liveTrackActive: false,
   liveTrackWatchId: null,
@@ -995,7 +1000,23 @@ function roleGateHTML() {
         <div class="desc">Review each JMDO's progress collecting orders from Company Dealers, WS Dealers and Sub Dealers.</div>
       </div>
     </button>
-  </div>`;
+  </div>
+  ${STATE.pinGateOpen ? `
+  <div style="position:fixed;inset:0;background:rgba(20,25,10,0.55);display:flex;align-items:center;justify-content:center;z-index:999;padding:16px;">
+    <div class="card" style="max-width:340px;width:100%;">
+      <div style="font-weight:800;font-size:15px;color:#22300E;margin-bottom:6px;">🔒 Manager Access</div>
+      <p style="font-size:12.5px;color:#5B6B45;line-height:1.5;margin:0 0 12px;">
+        Enter the PIN given to you by your Regional Manager to open MDO/MO Review.
+      </p>
+      ${STATE.pinError ? `<div class="notice-bad" style="margin-bottom:10px;">${STATE.pinError}</div>` : ""}
+      <input id="pin-input" type="password" inputmode="numeric" placeholder="Enter PIN" value="${esc(STATE.pinInput)}"
+        style="width:100%;font-size:16px;padding:12px;border:1.5px solid #D9D2B7;border-radius:10px;margin-bottom:12px;box-sizing:border-box;" />
+      <div style="display:flex;gap:10px;">
+        <button class="btn-ghost" id="pin-cancel" style="flex:1;justify-content:center;border:1.5px solid #D9D2B7;border-radius:12px;padding:11px 0;color:#6B7A50;">Cancel</button>
+        <button class="btn-primary" id="pin-submit" style="flex:1;">Enter</button>
+      </div>
+    </div>
+  </div>` : ""}`;
 }
 
 /* ================= JMDO view ================= */
@@ -2769,10 +2790,29 @@ function attachHandlers() {
     await saveDevice({ role: "jmdo" });
     render();
   });
-  $("pick-rm")?.addEventListener("click", async () => {
-    STATE.role = "rm";
-    await saveDevice({ role: "rm" });
+  $("pick-rm")?.addEventListener("click", () => {
+    STATE.pinGateOpen = true; STATE.pinInput = ""; STATE.pinError = "";
     render();
+    setTimeout(() => $("pin-input")?.focus(), 30);
+  });
+  $("pin-cancel")?.addEventListener("click", () => {
+    STATE.pinGateOpen = false; STATE.pinInput = ""; STATE.pinError = "";
+    render();
+  });
+  $("pin-input")?.addEventListener("input", (e) => { STATE.pinInput = e.target.value; });
+  $("pin-input")?.addEventListener("keydown", (e) => { if (e.key === "Enter") $("pin-submit")?.click(); });
+  $("pin-submit")?.addEventListener("click", async () => {
+    if (STATE.pinInput.trim() === "4733") {
+      STATE.pinGateOpen = false; STATE.pinInput = ""; STATE.pinError = "";
+      STATE.role = "rm";
+      await saveDevice({ role: "rm" });
+      render();
+    } else {
+      STATE.pinError = "Incorrect PIN. Please try again.";
+      STATE.pinInput = "";
+      render();
+      setTimeout(() => $("pin-input")?.focus(), 30);
+    }
   });
 
   // JMDO name step (click-to-select from roster)
