@@ -408,6 +408,7 @@ const MOMDO_ADDED_KEY = "frpv2:momdo-added";
 const MOMDO_REMOVED_KEY = "frpv2:momdo-removed";
 const PRODUCTS_ADDED_KEY = "frpv2:products-added";
 const DEALERS_ADDED_KEY = "frpv2:dealers-added";
+const FARMERS_KEY = "frpv2:farmers";
 const DEVICE_KEY = "frpv2:last-session";
 
 async function loadShared(key, fallback) {
@@ -608,6 +609,16 @@ let STATE = {
   pinInput: "",
   pinError: "",
 
+  // ---- Farmers Data (merged from the standalone Farmers Data Portal) ----
+  // { id: {id,jmdoName,region,moHQ,jmdoHQ,month,programme,farmerName,contact,address,location,acres,crop1,crop2,crop3,createdAt} }
+  farmers: {},
+  farmerForm: null,
+  farmerSearch: "",
+  farmerEditId: null,
+  confirmDeleteFarmerId: null,
+  rmFarmerRegionFilter: "",
+  rmFarmerJmdoFilter: "",
+
   // ---- Live Location Tracking (opt-in, JMDO-controlled) ----
   liveTrackActive: false,
   liveTrackWatchId: null,
@@ -718,6 +729,7 @@ async function setOrderConfirmStatus(id, status) {
   await persistEntries(next);
 }
 async function persistProfiles(next) { STATE.profiles = next; await saveShared(PROFILES_KEY, next); }
+async function persistFarmers(next) { STATE.farmers = next; await saveShared(FARMERS_KEY, next); }
 async function persistTargets(next) { STATE.targets = next; await saveShared(TARGETS_KEY, next); }
 async function persistSpcm(next) { STATE.spcm = next; await saveShared(SPCM_KEY, next); }
 async function persistSoil(next) { STATE.soil = next; await saveShared(SOIL_KEY, next); }
@@ -919,7 +931,7 @@ function momdoFieldHTML(profile) {
 
 /* ================= boot ================= */
 async function boot() {
-  const [e, p, t, sp, so, mp, at, ra, rr, ma, mr, pa, da, d] = await Promise.all([
+  const [e, p, t, sp, so, mp, at, ra, rr, ma, mr, pa, da, fa, d] = await Promise.all([
     loadShared(ENTRIES_KEY, []),
     loadShared(PROFILES_KEY, {}),
     loadShared(TARGETS_KEY, {}),
@@ -933,6 +945,7 @@ async function boot() {
     loadShared(MOMDO_REMOVED_KEY, []),
     loadShared(PRODUCTS_ADDED_KEY, []),
     loadShared(DEALERS_ADDED_KEY, []),
+    loadShared(FARMERS_KEY, {}),
     loadDevice(null),
   ]);
   STATE.entries = e; STATE.profiles = p; STATE.targets = t; STATE.spcm = sp; STATE.soil = so; STATE.mdProg = mp; STATE.attendance = at;
@@ -940,6 +953,7 @@ async function boot() {
   STATE.momdoAdded = ma; STATE.momdoRemoved = mr; computeMomdo();
   STATE.productsAdded = pa; computeProducts();
   STATE.dealersAdded = da; computeDealers();
+  STATE.farmers = fa;
   if (d && d.role) { STATE.role = d.role; if (d.name) { STATE.name = d.name; STATE.jmdoStep = "form"; } }
   STATE.ready = true;
   render();
@@ -953,7 +967,7 @@ function render() {
     !STATE.role ? roleGateHTML() :
     STATE.role === "jmdo" ? jmdoViewHTML() :
     rmViewHTML()
-  ) + `<footer class="foot">Data on this portal is shared — every JMDO and Regional Manager using this link sees the same live records.</footer>`;
+  ) + `<footer class="foot">Data on this portal is shared — every JMDO and Regional Manager using this link sees the same live records.</footer>` + deleteFarmerConfirmModalHTML();
   attachHandlers();
   wireLiveTrackingHandlers();
   maybeAttachLiveListener();
@@ -1336,13 +1350,15 @@ function jmdoViewHTML() {
       <button type="button" class="pill ${STATE.jmdoTab === "soil" ? "active" : ""}" data-jmdo-tab="soil">🧪 Soil Sample</button>
       <button type="button" class="pill ${STATE.jmdoTab === "mdprog" ? "active" : ""}" data-jmdo-tab="mdprog">🎯 MD Programmes</button>
       <button type="button" class="pill ${STATE.jmdoTab === "tracking" ? "active" : ""}" data-jmdo-tab="tracking">📍 Live Tracking</button>
+      <button type="button" class="pill ${STATE.jmdoTab === "farmers" ? "active" : ""}" data-jmdo-tab="farmers">🌾 Farmers Data</button>
     </div>
 
     ${STATE.jmdoTab === "attendance" ? attendanceJmdoCardHTML(profile) :
       STATE.jmdoTab === "spcm" ? spcmJmdoCardHTML(profile) :
       STATE.jmdoTab === "soil" ? soilJmdoCardHTML(profile) :
       STATE.jmdoTab === "mdprog" ? mdProgJmdoCardHTML(profile) :
-      STATE.jmdoTab === "tracking" ? liveTrackingJmdoCardHTML(profile) : `
+      STATE.jmdoTab === "tracking" ? liveTrackingJmdoCardHTML(profile) :
+      STATE.jmdoTab === "farmers" ? farmersJmdoCardHTML(profile) : `
 
     <div class="card">
       <button type="button" class="accordion-btn" id="toggle-profile">
@@ -1596,6 +1612,123 @@ function soilJmdoCardHTML(profile) {
       ${locked ? `<p style="font-size:11px;color:#8A7A50;margin:0 0 10px;">Your annual Soil Sample targets are fixed for ${currentYearKey()} until the ${nextYearKey()} cycle opens. You can still update your Achieved counts anytime.</p>` : ""}
       <button class="btn-primary" id="save-soil-self">${rec.freeTarget != null ? "Update Achieved" : "Save"} my Soil Sample target / achievement</button>`; })()}
     </div>`;
+}
+
+function deleteFarmerConfirmModalHTML() {
+  if (!STATE.confirmDeleteFarmerId) return "";
+  const rec = STATE.farmers[STATE.confirmDeleteFarmerId];
+  return `
+  <div style="position:fixed;inset:0;background:rgba(20,25,10,0.55);display:flex;align-items:center;justify-content:center;z-index:999;padding:16px;">
+    <div class="card" style="max-width:340px;width:100%;">
+      <div style="font-weight:800;font-size:15px;color:#22300E;margin-bottom:6px;">🗑️ Delete Farmer Entry</div>
+      <p style="font-size:12.5px;color:#5B6B45;line-height:1.5;margin:0 0 16px;">
+        Delete ${rec ? `<b>${esc(rec.farmerName)}</b>` : "this entry"}? This cannot be undone.
+      </p>
+      <div style="display:flex;gap:10px;">
+        <button class="btn-ghost" id="confirm-delete-farmer-cancel" style="flex:1;justify-content:center;border:1.5px solid #D9D2B7;border-radius:12px;padding:11px 0;color:#6B7A50;">Cancel</button>
+        <button class="btn-primary" id="confirm-delete-farmer-yes" style="flex:1;background:#C0473F;">Delete</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ---------- Farmers Data — JMDO self-entry card ---------- */
+function freshFarmerForm() {
+  return { moHQ: "", month: "", programme: "", farmerName: "", contact: "", address: "", location: "", acres: "", crop1: "", crop2: "", crop3: "" };
+}
+function farmersJmdoCardHTML(profile) {
+  if (!STATE.farmerForm) STATE.farmerForm = { ...freshFarmerForm(), moHQ: profile.moHQ || "" };
+  const f = STATE.farmerForm;
+  const editing = !!STATE.farmerEditId;
+  const moOptions = moHqsForRegion(normalizeRegion(profile.region));
+  const mine = Object.values(STATE.farmers || {})
+    .filter(x => x.jmdoName === STATE.name)
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  return `
+    <div class="card">
+      <div style="font-weight:800;font-size:14.5px;color:#22300E;margin-bottom:4px;">🌾 ${editing ? "Edit Farmer Entry" : "Add Farmer Entry"}</div>
+      <p style="font-size:12px;color:#8A7A50;margin:0 0 14px;">${esc(profile.region || "—")} / ${esc(profile.jmdoHQ || "—")}</p>
+      <div class="row2">
+        <div class="field"><label class="field-label">MO H.Q</label>
+          <select id="farmer-mohq">
+            <option value="">Select</option>
+            ${moOptions.map(h => `<option value="${esc(h)}" ${f.moHQ === h ? "selected" : ""}>${esc(h)}</option>`).join("")}
+          </select>
+        </div>
+        <div class="field"><label class="field-label">Month</label>
+          <select id="farmer-month">
+            <option value="">Select</option>
+            ${monthOptionsForCurrentAndNextYear().map(m => `<option value="${m}" ${f.month === m ? "selected" : ""}>${m}</option>`).join("")}
+          </select>
+        </div>
+      </div>
+      <div class="field"><label class="field-label">Programme</label>
+        <select id="farmer-programme">
+          <option value="">Select</option>
+          ${MD_PROGRAMME_NAMES.map(p => `<option value="${esc(p)}" ${f.programme === p ? "selected" : ""}>${esc(p)}</option>`).join("")}
+        </select>
+      </div>
+      <div class="field"><label class="field-label">Farmer Name <span style="color:#C0473F;">*</span></label>
+        <input id="farmer-name" value="${esc(f.farmerName)}" placeholder="Full name" /></div>
+      <div class="row2">
+        <div class="field"><label class="field-label">Contact Number</label>
+          <input id="farmer-contact" value="${esc(f.contact)}" placeholder="10-digit mobile" /></div>
+        <div class="field"><label class="field-label">Location</label>
+          <input id="farmer-location" value="${esc(f.location)}" placeholder="Village / town" /></div>
+      </div>
+      <div class="field"><label class="field-label">Contact Address</label>
+        <input id="farmer-address" value="${esc(f.address)}" placeholder="Village / street" /></div>
+      <div class="row2">
+        <div class="field"><label class="field-label">Acres</label>
+          <input id="farmer-acres" type="number" min="0" step="0.5" value="${esc(f.acres)}" placeholder="0" /></div>
+        <div class="field"><label class="field-label">Crop 1</label>
+          <input id="farmer-crop1" value="${esc(f.crop1)}" placeholder="e.g. Banana" /></div>
+      </div>
+      <div class="row2">
+        <div class="field"><label class="field-label">Crop 2</label>
+          <input id="farmer-crop2" value="${esc(f.crop2)}" placeholder="Optional" /></div>
+        <div class="field"><label class="field-label">Crop 3</label>
+          <input id="farmer-crop3" value="${esc(f.crop3)}" placeholder="Optional" /></div>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:6px;">
+        <button class="btn-primary" id="save-farmer" style="flex:1;">${editing ? "Update farmer entry" : "Save farmer entry"}</button>
+        ${editing ? `<button class="btn-ghost" id="cancel-edit-farmer" style="border:1.5px solid #D9D2B7;border-radius:12px;padding:0 18px;color:#6B7A50;">Cancel</button>` : ""}
+      </div>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+        <div style="font-weight:800;font-size:14.5px;color:#22300E;">My Farmer Entries (${mine.length})</div>
+        ${mine.length > 0 ? `<button class="btn-ghost" id="export-my-farmers-xlsx" style="border:1.5px solid #D9D2B7;border-radius:10px;padding:7px 12px;font-size:12px;">⬇ Export My Entries (Excel)</button>` : ""}
+      </div>
+      ${mine.length === 0 ? `<div class="empty-note"><div class="ic">🌾</div>No farmer entries yet.</div>` : `
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          ${mine.map(m => `
+            <div style="background:#fff;border:1px solid #EEE7CE;border-radius:10px;padding:10px 12px;display:flex;justify-content:space-between;align-items:flex-start;gap:10px;">
+              <div style="min-width:0;">
+                <div style="font-weight:700;font-size:13px;color:#3E5C17;">${esc(m.farmerName)}</div>
+                <div style="font-size:11.5px;color:#8A7A50;">${esc(m.location || "—")} · ${fmtNum(m.acres || 0)} acres · ${esc([m.crop1, m.crop2, m.crop3].filter(Boolean).join(", ") || "—")}</div>
+                <div style="font-size:11px;color:#A99B72;">${esc(m.moHQ || "—")} · ${esc(m.month || "—")}${m.programme ? " · " + esc(m.programme) : ""}</div>
+              </div>
+              <div style="display:flex;gap:12px;flex:none;">
+                <span class="link-btn" data-edit-farmer="${esc(m.id)}" style="cursor:pointer;">Edit</span>
+                <span class="link-btn" data-del-farmer="${esc(m.id)}" style="cursor:pointer;color:#C0473F;">Delete</span>
+              </div>
+            </div>
+          `).join("")}
+        </div>
+      `}
+    </div>`;
+}
+function monthOptionsForCurrentAndNextYear() {
+  const names = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  const out = [];
+  const currentYear = new Date().getFullYear();
+  for (let y = currentYear; y <= currentYear + 1; y++) {
+    const yy = String(y).slice(-2);
+    names.forEach(m => out.push(`${m}-${yy}`));
+  }
+  return out;
 }
 
 /* ---------- Live Location Tracking — JMDO self card (opt-in, JMDO fully controls it) ---------- */
@@ -2007,12 +2140,13 @@ function rmViewHTML() {
       <button type="button" class="pill ${STATE.rmTab === "soil" ? "active" : ""}" data-rm-tab="soil">🧪 Soil Sample</button>
       <button type="button" class="pill ${STATE.rmTab === "mdprog" ? "active" : ""}" data-rm-tab="mdprog">🎯 MD Programmes</button>
       <button type="button" class="pill ${STATE.rmTab === "live" ? "active" : ""}" data-rm-tab="live">🛰️ Live Map</button>
+      <button type="button" class="pill ${STATE.rmTab === "farmers" ? "active" : ""}" data-rm-tab="farmers">🌾 Farmers Data</button>
       <button type="button" class="pill ${STATE.rmTab === "roster" ? "active" : ""}" data-rm-tab="roster">👥 Manage JMDOs</button>
       <button type="button" class="pill ${STATE.rmTab === "momdo" ? "active" : ""}" data-rm-tab="momdo">🧑‍💼 Manage MO/MDO</button>
       <button type="button" class="pill ${STATE.rmTab === "catalog" ? "active" : ""}" data-rm-tab="catalog">🏷️ Products &amp; Dealers</button>
     </div>
 
-    ${STATE.rmTab === "dashboard" ? dashboardHTML() : STATE.rmTab === "attendance" ? attendanceReviewHTML() : STATE.rmTab === "spcm" ? spcmReviewHTML() : STATE.rmTab === "soil" ? soilReviewHTML() : STATE.rmTab === "mdprog" ? mdProgReviewHTML() : STATE.rmTab === "live" ? liveMapReviewHTML() : STATE.rmTab === "roster" ? rosterManageHTML() : STATE.rmTab === "momdo" ? momdoManageHTML() : STATE.rmTab === "catalog" ? catalogManageHTML() : `
+    ${STATE.rmTab === "dashboard" ? dashboardHTML() : STATE.rmTab === "attendance" ? attendanceReviewHTML() : STATE.rmTab === "spcm" ? spcmReviewHTML() : STATE.rmTab === "soil" ? soilReviewHTML() : STATE.rmTab === "mdprog" ? mdProgReviewHTML() : STATE.rmTab === "live" ? liveMapReviewHTML() : STATE.rmTab === "farmers" ? farmersReviewHTML() : STATE.rmTab === "roster" ? rosterManageHTML() : STATE.rmTab === "momdo" ? momdoManageHTML() : STATE.rmTab === "catalog" ? catalogManageHTML() : `
 
     <div class="card">
       <div class="field"><label class="field-label">Your name (as MDO / MO)</label>
@@ -2622,6 +2756,68 @@ function soilReviewHTML() {
 }
 
 /* ---------- MD Programmes — MO/MDO review + once-per-month target entry ---------- */
+/* ---------- Farmers Data — RM/MO review ---------- */
+function farmersReviewHTML() {
+  const all = Object.values(STATE.farmers || {});
+  const regions = Array.from(new Set(all.map(x => x.region).filter(Boolean))).sort();
+  const jmdos = Array.from(new Set(all.map(x => x.jmdoName).filter(Boolean))).sort();
+  let rows = all;
+  if (STATE.rmFarmerRegionFilter) rows = rows.filter(x => x.region === STATE.rmFarmerRegionFilter);
+  if (STATE.rmFarmerJmdoFilter) rows = rows.filter(x => x.jmdoName === STATE.rmFarmerJmdoFilter);
+  const q = (STATE.farmerSearch || "").trim().toLowerCase();
+  if (q) rows = rows.filter(x => [x.farmerName, x.jmdoName, x.location, x.crop1, x.crop2, x.crop3].some(v => (v || "").toLowerCase().includes(q)));
+  rows = rows.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  return `
+    <div class="card">
+      <div style="font-weight:800;font-size:14.5px;color:#22300E;margin-bottom:10px;">🌾 Farmers Data (${all.length} total)</div>
+      <div class="row2" style="margin-bottom:12px;">
+        <div class="field"><label class="field-label">Region</label>
+          <select id="farmer-filter-region">
+            <option value="">All Regions</option>
+            ${regions.map(r => `<option value="${esc(r)}" ${STATE.rmFarmerRegionFilter === r ? "selected" : ""}>${esc(r)}</option>`).join("")}
+          </select>
+        </div>
+        <div class="field"><label class="field-label">JMDO</label>
+          <select id="farmer-filter-jmdo">
+            <option value="">All JMDOs</option>
+            ${jmdos.map(j => `<option value="${esc(j)}" ${STATE.rmFarmerJmdoFilter === j ? "selected" : ""}>${esc(j)}</option>`).join("")}
+          </select>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+        <input id="farmer-search" value="${esc(STATE.farmerSearch)}" placeholder="🔍 Search farmer, JMDO, location, crop…"
+          style="flex:1;min-width:200px;padding:10px 12px;border:1.5px solid #D9D2B7;border-radius:10px;" />
+        <button class="btn-ghost" id="export-farmers-csv" style="border:1.5px solid #D9D2B7;border-radius:10px;padding:10px 14px;">⬇ Export CSV</button>
+        <button class="btn-ghost" id="export-farmers-xlsx" style="border:1.5px solid #D9D2B7;border-radius:10px;padding:10px 14px;">⬇ Export Excel</button>
+      </div>
+      ${rows.length === 0 ? `<div class="empty-note"><div class="ic">🌾</div>No farmer entries match.</div>` : `
+      <div style="overflow-x:auto;">
+        <table style="width:100%;border-collapse:collapse;font-size:12.5px;min-width:900px;">
+          <thead><tr style="background:#3E5C17;color:#fff;">
+            ${["JMDO","Region","MO HQ","JMDO HQ","Month","Programme","Farmer","Contact","Location","Acres","Crops",""].map(h => `<th style="padding:8px 10px;text-align:left;white-space:nowrap;">${h}</th>`).join("")}
+          </tr></thead>
+          <tbody>
+            ${rows.map(r => `
+              <tr style="border-bottom:1px solid #EEE7CE;">
+                <td style="padding:8px 10px;font-weight:700;">${esc(r.jmdoName)}</td>
+                <td style="padding:8px 10px;">${esc(r.region || "—")}</td>
+                <td style="padding:8px 10px;">${esc(r.moHQ || "—")}</td>
+                <td style="padding:8px 10px;">${esc(r.jmdoHQ || "—")}</td>
+                <td style="padding:8px 10px;">${esc(r.month || "—")}</td>
+                <td style="padding:8px 10px;">${esc(r.programme || "—")}</td>
+                <td style="padding:8px 10px;font-weight:700;color:#3E5C17;">${esc(r.farmerName)}</td>
+                <td style="padding:8px 10px;">${esc(r.contact || "—")}</td>
+                <td style="padding:8px 10px;">${esc(r.location || "—")}</td>
+                <td style="padding:8px 10px;">${fmtNum(r.acres || 0)}</td>
+                <td style="padding:8px 10px;">${esc([r.crop1, r.crop2, r.crop3].filter(Boolean).join(", ") || "—")}</td>
+                <td style="padding:8px 10px;"><span class="link-btn" data-del-farmer="${esc(r.id)}" style="color:#C0473F;cursor:pointer;">Delete</span></td>
+              </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>`}
+    </div>`;
+}
+
 /* ---------- Live Map — RM/MO view (real-time positions of JMDOs who opted in) ---------- */
 function liveMapReviewHTML() {
   const rows = Object.values(STATE.liveLocations || {}).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
@@ -3180,6 +3376,128 @@ function attachHandlers() {
   });
   document.querySelectorAll("[data-rm-tab]").forEach(btn => {
     btn.addEventListener("click", () => { STATE.rmTab = btn.getAttribute("data-rm-tab"); render(); });
+  });
+
+  /* ---------- Farmers Data — JMDO self-entry ---------- */
+  ["farmer-mohq","farmer-month","farmer-programme","farmer-name","farmer-contact","farmer-location","farmer-address","farmer-acres","farmer-crop1","farmer-crop2","farmer-crop3"].forEach(id => {
+    $(id)?.addEventListener("input", (e) => {
+      if (!STATE.farmerForm) STATE.farmerForm = freshFarmerForm();
+      const map = {
+        "farmer-mohq": "moHQ", "farmer-month": "month", "farmer-programme": "programme", "farmer-name": "farmerName",
+        "farmer-contact": "contact", "farmer-location": "location", "farmer-address": "address",
+        "farmer-acres": "acres", "farmer-crop1": "crop1", "farmer-crop2": "crop2", "farmer-crop3": "crop3",
+      };
+      STATE.farmerForm[map[id]] = e.target.value;
+    });
+    $(id)?.addEventListener("change", (e) => {
+      if (!STATE.farmerForm) STATE.farmerForm = freshFarmerForm();
+      const map = { "farmer-mohq": "moHQ", "farmer-month": "month", "farmer-programme": "programme" };
+      if (map[id]) STATE.farmerForm[map[id]] = e.target.value;
+    });
+  });
+  $("save-farmer")?.addEventListener("click", async () => {
+    const f = STATE.farmerForm || freshFarmerForm();
+    if (!f.farmerName || !f.farmerName.trim()) { alert("Farmer name is required."); return; }
+    const rosterRow = ROSTER.find(r => r.name === STATE.name);
+    const savedProfile = STATE.profiles[STATE.name] || {};
+    const region = savedProfile.region || rosterRow?.region || "";
+    const jmdoHQ = savedProfile.jmdoHQ || rosterRow?.hq || "";
+    const editId = STATE.farmerEditId;
+    const id = editId || ("f_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8));
+    const prior = editId ? STATE.farmers[editId] : null;
+    const entry = {
+      id, jmdoName: STATE.name, region, moHQ: f.moHQ || "", jmdoHQ,
+      month: f.month || "", programme: f.programme || "", farmerName: f.farmerName.trim(), contact: f.contact || "",
+      address: f.address || "", location: f.location || "", acres: f.acres || "", crop1: f.crop1 || "", crop2: f.crop2 || "", crop3: f.crop3 || "",
+      createdAt: prior?.createdAt || Date.now(),
+      updatedAt: editId ? Date.now() : undefined,
+    };
+    const next = { ...STATE.farmers, [id]: entry };
+    await persistFarmers(next);
+    STATE.farmerForm = { ...freshFarmerForm(), moHQ: f.moHQ || "" };
+    STATE.farmerEditId = null;
+    render();
+  });
+  document.querySelectorAll("[data-edit-farmer]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const id = btn.getAttribute("data-edit-farmer");
+      const rec = STATE.farmers[id];
+      if (!rec) return;
+      STATE.farmerEditId = id;
+      STATE.farmerForm = {
+        moHQ: rec.moHQ || "", month: rec.month || "", programme: rec.programme || "", farmerName: rec.farmerName || "",
+        contact: rec.contact || "", address: rec.address || "", location: rec.location || "", acres: rec.acres || "",
+        crop1: rec.crop1 || "", crop2: rec.crop2 || "", crop3: rec.crop3 || "",
+      };
+      render();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+  });
+  $("cancel-edit-farmer")?.addEventListener("click", () => {
+    STATE.farmerEditId = null;
+    STATE.farmerForm = freshFarmerForm();
+    render();
+  });
+  $("export-my-farmers-xlsx")?.addEventListener("click", () => {
+    if (typeof XLSX === "undefined") { alert("Excel export library failed to load — check your network connection and try again."); return; }
+    const mine = Object.values(STATE.farmers || {}).filter(x => x.jmdoName === STATE.name).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    if (!mine.length) { alert("No farmer entries to export yet."); return; }
+    const headers = ["MO HQ","JMDO HQ","Region","Month","Programme","Farmer Name","Contact","Address","Location","Acres","Crop 1","Crop 2","Crop 3","Submitted At"];
+    const rows = mine.map(r => [r.moHQ, r.jmdoHQ, r.region, r.month, r.programme, r.farmerName, r.contact, r.address, r.location, r.acres, r.crop1, r.crop2, r.crop3, r.createdAt ? new Date(r.createdAt).toLocaleString("en-IN") : ""]);
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "My Farmers");
+    XLSX.writeFile(wb, `My-Farmers-Data-${todayStr()}.xlsx`);
+  });
+  document.querySelectorAll("[data-del-farmer]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      STATE.confirmDeleteFarmerId = btn.getAttribute("data-del-farmer");
+      render();
+    });
+  });
+  $("confirm-delete-farmer-cancel")?.addEventListener("click", () => {
+    STATE.confirmDeleteFarmerId = null;
+    render();
+  });
+  $("confirm-delete-farmer-yes")?.addEventListener("click", async () => {
+    const id = STATE.confirmDeleteFarmerId;
+    if (!id) return;
+    const next = { ...STATE.farmers };
+    delete next[id];
+    await persistFarmers(next);
+    if (STATE.farmerEditId === id) { STATE.farmerEditId = null; STATE.farmerForm = freshFarmerForm(); }
+    STATE.confirmDeleteFarmerId = null;
+    render();
+  });
+
+  /* ---------- Farmers Data — RM/MO review ---------- */
+  $("farmer-filter-region")?.addEventListener("change", (e) => { STATE.rmFarmerRegionFilter = e.target.value; render(); });
+  $("farmer-filter-jmdo")?.addEventListener("change", (e) => { STATE.rmFarmerJmdoFilter = e.target.value; render(); });
+  $("farmer-search")?.addEventListener("input", (e) => { STATE.farmerSearch = e.target.value; renderKeepFocus("farmer-search"); });
+  function getFilteredFarmerRows() {
+    let rows = Object.values(STATE.farmers || {});
+    if (STATE.rmFarmerRegionFilter) rows = rows.filter(x => x.region === STATE.rmFarmerRegionFilter);
+    if (STATE.rmFarmerJmdoFilter) rows = rows.filter(x => x.jmdoName === STATE.rmFarmerJmdoFilter);
+    const q = (STATE.farmerSearch || "").trim().toLowerCase();
+    if (q) rows = rows.filter(x => [x.farmerName, x.jmdoName, x.location, x.crop1, x.crop2, x.crop3].some(v => (v || "").toLowerCase().includes(q)));
+    return rows.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  }
+  const FARMER_HEADERS = ["JMDO","Region","MO HQ","JMDO HQ","Month","Programme","Farmer Name","Contact","Address","Location","Acres","Crop 1","Crop 2","Crop 3","Submitted At"];
+  function farmerRowToArray(r) {
+    return [r.jmdoName, r.region, r.moHQ, r.jmdoHQ, r.month, r.programme, r.farmerName, r.contact, r.address, r.location, r.acres, r.crop1, r.crop2, r.crop3, r.createdAt ? new Date(r.createdAt).toLocaleString("en-IN") : ""];
+  }
+  $("export-farmers-csv")?.addEventListener("click", () => {
+    const rows = getFilteredFarmerRows();
+    downloadCSV(`SPIC-Farmers-Data-${todayStr()}.csv`, FARMER_HEADERS, rows.map(farmerRowToArray));
+  });
+  $("export-farmers-xlsx")?.addEventListener("click", () => {
+    if (typeof XLSX === "undefined") { alert("Excel export library failed to load — check your network connection and try again."); return; }
+    const rows = getFilteredFarmerRows();
+    if (!rows.length) { alert("No farmer entries match the current filters to export."); return; }
+    const ws = XLSX.utils.aoa_to_sheet([FARMER_HEADERS, ...rows.map(farmerRowToArray)]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Farmers Data");
+    XLSX.writeFile(wb, `SPIC-Farmers-Data-${todayStr()}.xlsx`);
   });
 
   /* ---------- Manage JMDOs — add / mark resigned / restore ---------- */
