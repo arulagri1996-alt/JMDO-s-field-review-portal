@@ -10,6 +10,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700;9..144,800&family=Inter:wght@400;500;600;700;800&display=swap');
 
@@ -616,6 +617,9 @@ let STATE = {
   farmerSearch: "",
   farmerEditId: null,
   confirmDeleteFarmerId: null,
+  pendingFarmerImport: null,   // { imported, skipped, additions }
+  farmerImportMsg: "",
+  viewMdProgPhotoKey: null,
   rmFarmerRegionFilter: "",
   rmFarmerJmdoFilter: "",
 
@@ -967,7 +971,7 @@ function render() {
     !STATE.role ? roleGateHTML() :
     STATE.role === "jmdo" ? jmdoViewHTML() :
     rmViewHTML()
-  ) + `<footer class="foot">Data on this portal is shared — every JMDO and Regional Manager using this link sees the same live records.</footer>` + deleteFarmerConfirmModalHTML();
+  ) + `<footer class="foot">Data on this portal is shared — every JMDO and Regional Manager using this link sees the same live records.</footer>` + deleteFarmerConfirmModalHTML() + importFarmersConfirmModalHTML() + mdProgPhotoViewModalHTML();
   attachHandlers();
   wireLiveTrackingHandlers();
   maybeAttachLiveListener();
@@ -1614,6 +1618,47 @@ function soilJmdoCardHTML(profile) {
     </div>`;
 }
 
+function importFarmersConfirmModalHTML() {
+  if (!STATE.pendingFarmerImport) return "";
+  const { imported, skipped } = STATE.pendingFarmerImport;
+  return `
+  <div style="position:fixed;inset:0;background:rgba(20,25,10,0.55);display:flex;align-items:center;justify-content:center;z-index:999;padding:16px;">
+    <div class="card" style="max-width:360px;width:100%;">
+      <div style="font-weight:800;font-size:15px;color:#22300E;margin-bottom:6px;">📥 Import Farmers Data</div>
+      <p style="font-size:12.5px;color:#5B6B45;line-height:1.5;margin:0 0 16px;">
+        Found <b>${imported}</b> farmer entr${imported === 1 ? "y" : "ies"} to import${skipped ? `, and skipped <b>${skipped}</b> row(s) with no Farmer Name` : ""}.
+        Add ${imported === 1 ? "this entry" : "these entries"} to Farmers Data?
+      </p>
+      <div style="display:flex;gap:10px;">
+        <button class="btn-ghost" id="confirm-import-farmers-cancel" style="flex:1;justify-content:center;border:1.5px solid #D9D2B7;border-radius:12px;padding:11px 0;color:#6B7A50;">Cancel</button>
+        <button class="btn-primary" id="confirm-import-farmers-yes" style="flex:1;">Import</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function mdProgPhotoViewModalHTML() {
+  if (!STATE.viewMdProgPhotoKey) return "";
+  const rec = STATE.mdProg[STATE.viewMdProgPhotoKey];
+  if (!rec || !rec.photo) return "";
+  return `
+  <div style="position:fixed;inset:0;background:rgba(20,25,10,0.75);display:flex;align-items:center;justify-content:center;z-index:999;padding:16px;" id="mdprog-photo-modal-bg">
+    <div style="max-width:480px;width:100%;">
+      <div style="background:#fff;border-radius:16px;overflow:hidden;">
+        <img src="${rec.photo}" style="width:100%;display:block;" />
+        <div style="padding:14px;">
+          <div style="font-weight:800;color:#22300E;font-size:13.5px;">${esc(rec.name)} — ${esc(rec.programme)}</div>
+          <div style="font-size:11.5px;color:#8A7A50;margin-top:2px;">${esc(rec.place || "—")} · ${esc(rec.lastDate || "—")}</div>
+          <div style="display:flex;gap:10px;margin-top:12px;">
+            <a href="${rec.photo}" download="MDProg-${esc(rec.name)}-${esc(rec.programme)}.jpg" style="flex:1;text-align:center;background:#3E5C17;color:#fff;font-weight:700;font-size:13px;padding:11px 0;border-radius:10px;text-decoration:none;">⬇ Download</a>
+            <button id="close-mdprog-photo-modal" style="flex:1;border:1.5px solid #D9D2B7;border-radius:10px;padding:11px 0;background:#fff;color:#6B7A50;font-weight:700;font-size:13px;cursor:pointer;">Close</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
 function deleteFarmerConfirmModalHTML() {
   if (!STATE.confirmDeleteFarmerId) return "";
   const rec = STATE.farmers[STATE.confirmDeleteFarmerId];
@@ -1770,7 +1815,7 @@ function mdProgJmdoCardHTML(profile) {
   const programme = STATE.jmdoMdProgProgramme || MD_PROGRAMME_NAMES[0];
   const key = mdProgKey(STATE.name, programme);
   const rec = STATE.mdProg[key] || {};
-  const d = STATE.mdProgSelfDraft || { target: rec.target ?? "", achieved: rec.achieved ?? "", farmers: rec.farmers ?? "", lastDate: rec.lastDate || todayStr(), place: rec.place || "" };
+  const d = STATE.mdProgSelfDraft || { target: rec.target ?? "", achieved: rec.achieved ?? "", farmers: rec.farmers ?? "", lastDate: rec.lastDate || todayStr(), place: rec.place || "", photo: rec.photo || null, location: rec.location || null, locationStatus: rec.location ? "success" : "", locationError: "" };
   const target = Number(rec.target) || 0, achieved = Number(rec.achieved) || 0;
   const remaining = Math.max(target - achieved, 0);
   const pct = pctOf(achieved, target);
@@ -1817,6 +1862,29 @@ function mdProgJmdoCardHTML(profile) {
         <div class="field"><label class="field-label">Number of Farmers Participated</label><input type="number" inputmode="decimal" id="mdprog-self-farmers" value="${esc(d.farmers)}" placeholder="e.g. 30" /></div>
       </div>
       <div class="field"><label class="field-label">Date</label><input type="date" id="mdprog-self-date" value="${d.lastDate || todayStr()}" /></div>
+
+      <div class="field">
+        <label class="field-label">📷 Meeting Photo</label>
+        <input type="file" id="mdprog-self-photo" accept="image/*" capture="environment" style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;" />
+        <label for="mdprog-self-photo" style="display:inline-flex;align-items:center;gap:6px;border:1.5px dashed #8FAE55;border-radius:10px;padding:9px 14px;color:#3E5C17;font-weight:700;font-size:12.5px;cursor:pointer;">
+          📷 ${d.photo ? "Retake / choose another photo" : "Take or upload a photo"}
+        </label>
+        ${d.photo ? `
+          <div style="margin-top:10px;display:flex;align-items:center;gap:10px;">
+            <img src="${d.photo}" style="width:64px;height:64px;object-fit:cover;border-radius:10px;border:1.5px solid #D9D2B7;" />
+            <span class="link-btn" id="mdprog-remove-photo" style="cursor:pointer;color:#C0473F;">Remove photo</span>
+          </div>` : ""}
+      </div>
+
+      <div class="field">
+        <label class="field-label">📍 Meeting Location (GPS)</label>
+        <button type="button" id="mdprog-capture-location" style="border:1.5px solid #6E9B2C;border-radius:999px;padding:8px 15px;background:white;color:#3E5C17;font-weight:800;font-size:12px;cursor:pointer;">
+          📍 ${d.location ? "Recapture" : "Capture"} my location
+        </button>
+        ${d.locationStatus === "capturing" ? `<p style="font-size:11.5px;color:#8A7A50;margin:8px 0 0;">Capturing location…</p>` : ""}
+        ${d.locationStatus === "error" ? `<div class="notice-bad" style="margin-top:8px;">⚠️ ${esc(d.locationError || "Could not get location.")}</div>` : ""}
+        ${d.location ? `<p style="font-size:11.5px;color:#3E5C17;font-weight:700;margin:8px 0 0;">✓ Location captured (±${Math.round(d.location.accuracy)}m) — <a href="https://www.google.com/maps?q=${d.location.lat},${d.location.lng}" target="_blank" rel="noopener" style="color:#3E5C17;">view on map</a></p>` : ""}
+      </div>
       ${locked ? `<p style="font-size:11px;color:#8A7A50;margin:0 0 10px;">This programme's target for ${monthLabel(currentMonth())} is fixed for the month and cannot be changed here. You can still update Achieved, Farmers Participated and Date anytime.</p>` : `<p style="font-size:11px;color:#8A7A50;margin:0 0 10px;">Targets are allocated by your MDO / MO. Once a target is saved for a programme this month, it locks for the rest of ${monthLabel(currentMonth())}.</p>`}
       <button class="btn-primary" id="save-mdprog-self">${rec.target != null ? "Update" : "Save"} ${esc(programme)}</button>
     </div>
@@ -2784,11 +2852,21 @@ function farmersReviewHTML() {
           </select>
         </div>
       </div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;">
         <input id="farmer-search" value="${esc(STATE.farmerSearch)}" placeholder="🔍 Search farmer, JMDO, location, crop…"
           style="flex:1;min-width:200px;padding:10px 12px;border:1.5px solid #D9D2B7;border-radius:10px;" />
         <button class="btn-ghost" id="export-farmers-csv" style="border:1.5px solid #D9D2B7;border-radius:10px;padding:10px 14px;">⬇ Export CSV</button>
         <button class="btn-ghost" id="export-farmers-xlsx" style="border:1.5px solid #D9D2B7;border-radius:10px;padding:10px 14px;">⬇ Export Excel</button>
+      </div>
+      <div style="margin-bottom:14px;">
+        <label for="farmer-import-file" class="btn-ghost" style="display:inline-flex;border:1.5px dashed #8FAE55;border-radius:10px;padding:9px 14px;color:#3E5C17;cursor:pointer;">
+          📥 Import farmers from CSV
+        </label>
+        <input type="file" id="farmer-import-file" accept=".csv" style="position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;" />
+        ${STATE.farmerImportMsg ? `<p style="font-size:12px;color:#3E5C17;font-weight:700;margin:8px 0 0;">${esc(STATE.farmerImportMsg)}</p>` : ""}
+        <p style="font-size:11px;color:#8A7A50;margin:6px 0 0;">
+          Expected columns: State, Region, District, MO HQ, JMDO HQ, JMDO Name, Month, Programme Name, Farmer Name, Contact Number, Contact Address, Location, Acres, Crop 1, Crop 2, Crop 3
+        </p>
       </div>
       ${rows.length === 0 ? `<div class="empty-note"><div class="ic">🌾</div>No farmer entries match.</div>` : `
       <div style="overflow-x:auto;">
@@ -2939,7 +3017,7 @@ function mdProgReviewHTML() {
     <div class="card" style="padding:0;overflow-x:auto;">
       <table style="width:100%;border-collapse:collapse;font-size:12px;min-width:1080px;">
         <thead><tr style="background:#F6F1E1;text-align:left;">
-          ${["Region","MO H.Q","JMDO H.Q","JMDO Name","Programme","Place","Month","Date","Target","Achieved","Remaining","Farmers","Ach %","Status","Remarks",""].map(h => `<th style="padding:9px 10px;font-weight:800;color:#6B5B2E;">${h}</th>`).join("")}
+          ${["Region","MO H.Q","JMDO H.Q","JMDO Name","Programme","Place","Month","Date","Target","Achieved","Remaining","Farmers","Ach %","Status","Remarks","Photo / Location",""].map(h => `<th style="padding:9px 10px;font-weight:800;color:#6B5B2E;">${h}</th>`).join("")}
         </tr></thead>
         <tbody>
         ${rows.map(r => {
@@ -2962,6 +3040,10 @@ function mdProgReviewHTML() {
             <td style="padding:9px 10px;"><span class="badge ${pct >= 100 ? "good" : pct >= 60 ? "warn" : "bad"}">${pct.toFixed(0)}%</span></td>
             <td style="padding:9px 10px;">${esc(r.reviewStatus || MD_PROG_REVIEW_STATUSES[0])}</td>
             <td style="padding:9px 10px;max-width:180px;">${esc(r.remarks || "—")}</td>
+            <td style="padding:9px 10px;">
+              ${r.photo ? `<img src="${r.photo}" data-view-mdprog-photo="${esc(r.key)}" style="width:38px;height:38px;object-fit:cover;border-radius:8px;border:1px solid #D9D2B7;cursor:pointer;" />` : `<span style="color:#C7BC93;">—</span>`}
+              ${r.location ? `<a href="https://www.google.com/maps?q=${r.location.lat},${r.location.lng}" target="_blank" rel="noopener" style="display:block;font-size:11px;color:#3E5C17;font-weight:700;margin-top:3px;">📍 view</a>` : ""}
+            </td>
             <td style="padding:9px 10px;"><span class="link-btn" data-edit-mdprog="${esc(r.key)}" style="cursor:pointer;">Edit</span></td>
           </tr>`;
         }).join("")}
@@ -3499,6 +3581,85 @@ function attachHandlers() {
     XLSX.utils.book_append_sheet(wb, ws, "Farmers Data");
     XLSX.writeFile(wb, `SPIC-Farmers-Data-${todayStr()}.xlsx`);
   });
+  $("farmer-import-file")?.addEventListener("change", async (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    if (typeof Papa === "undefined") {
+      STATE.farmerImportMsg = "⚠️ CSV import library failed to load — check your network connection and try again.";
+      render(); e.target.value = ""; return;
+    }
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: (results) => {
+        const HEADER_MAP = {
+          "region": "region", "mohq": "moHQ", "jmdohq": "jmdoHQ", "jmdoname": "jmdoName",
+          "month": "month", "programmename": "programme", "farmername": "farmerName",
+          "contactnumber": "contact", "contactaddress": "address", "location": "location",
+          "acres": "acres", "crop1": "crop1", "crop2": "crop2", "crop3": "crop3",
+        };
+        const normKey = (k) => String(k || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        let imported = 0, skipped = 0;
+        const additions = {};
+        (results.data || []).forEach((row, idx) => {
+          const mapped = {};
+          Object.keys(row).forEach((k) => {
+            const nk = normKey(k);
+            if (HEADER_MAP[nk]) mapped[HEADER_MAP[nk]] = String(row[k] || "").trim();
+          });
+          if (!mapped.farmerName) { skipped++; return; }
+          const id = "f_import_" + Date.now() + "_" + idx + "_" + Math.random().toString(36).slice(2, 6);
+          additions[id] = {
+            id, jmdoName: mapped.jmdoName || "", region: mapped.region || "", moHQ: mapped.moHQ || "", jmdoHQ: mapped.jmdoHQ || "",
+            month: mapped.month || "", programme: mapped.programme || "", farmerName: mapped.farmerName,
+            contact: mapped.contact || "", address: mapped.address || "", location: mapped.location || "",
+            acres: mapped.acres || "", crop1: mapped.crop1 || "", crop2: mapped.crop2 || "", crop3: mapped.crop3 || "",
+            createdAt: Date.now(),
+          };
+          imported++;
+        });
+        e.target.value = "";
+        if (imported === 0) {
+          STATE.farmerImportMsg = "⚠️ No valid rows found. Make sure the CSV has a 'Farmer Name' column with values.";
+          render();
+          return;
+        }
+        STATE.farmerImportMsg = "";
+        STATE.pendingFarmerImport = { imported, skipped, additions };
+        render();
+      },
+      error: (err) => {
+        STATE.farmerImportMsg = "⚠️ Could not read that CSV file: " + err.message;
+        render(); e.target.value = "";
+      },
+    });
+  });
+  $("confirm-import-farmers-cancel")?.addEventListener("click", () => {
+    STATE.pendingFarmerImport = null;
+    render();
+  });
+  $("confirm-import-farmers-yes")?.addEventListener("click", async () => {
+    const pending = STATE.pendingFarmerImport;
+    if (!pending) return;
+    const next = { ...STATE.farmers, ...pending.additions };
+    await persistFarmers(next);
+    STATE.pendingFarmerImport = null;
+    STATE.farmerImportMsg = `✅ Imported ${pending.imported} farmer entr${pending.imported === 1 ? "y" : "ies"} successfully.`;
+    render();
+  });
+
+  /* ---------- MD Programmes — photo viewer ---------- */
+  document.querySelectorAll("[data-view-mdprog-photo]").forEach(el => {
+    el.addEventListener("click", () => {
+      STATE.viewMdProgPhotoKey = el.getAttribute("data-view-mdprog-photo");
+      render();
+    });
+  });
+  $("close-mdprog-photo-modal")?.addEventListener("click", () => { STATE.viewMdProgPhotoKey = null; render(); });
+  $("mdprog-photo-modal-bg")?.addEventListener("click", (e) => {
+    if (e.target.id === "mdprog-photo-modal-bg") { STATE.viewMdProgPhotoKey = null; render(); }
+  });
+
 
   /* ---------- Manage JMDOs — add / mark resigned / restore ---------- */
   ["roster-region","roster-district","roster-hq","roster-name"].forEach(id => {
@@ -3843,6 +4004,73 @@ function attachHandlers() {
       if (id !== "mdprog-self-date" && id !== "mdprog-self-place") renderKeepFocus(id); // keep Remaining preview live without losing focus
     });
   });
+  function currentMdProgDraft() {
+    const programme = STATE.jmdoMdProgProgramme || MD_PROGRAMME_NAMES[0];
+    const key = mdProgKey(STATE.name, programme);
+    const rec = STATE.mdProg[key] || {};
+    return { target: rec.target ?? "", achieved: rec.achieved ?? "", farmers: rec.farmers ?? "", lastDate: rec.lastDate || todayStr(), place: rec.place || "", photo: rec.photo || null, location: rec.location || null, locationStatus: rec.location ? "success" : "", locationError: "" };
+  }
+  $("mdprog-self-photo")?.addEventListener("change", (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    if (!STATE.mdProgSelfDraft) STATE.mdProgSelfDraft = currentMdProgDraft();
+    const img = new Image();
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      img.onload = () => {
+        const maxW = 900;
+        const scale = Math.min(1, maxW / img.width);
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        STATE.mdProgSelfDraft.photo = canvas.toDataURL("image/jpeg", 0.6);
+        render();
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  });
+  $("mdprog-remove-photo")?.addEventListener("click", () => {
+    if (!STATE.mdProgSelfDraft) STATE.mdProgSelfDraft = currentMdProgDraft();
+    STATE.mdProgSelfDraft.photo = null;
+    render();
+  });
+  $("mdprog-capture-location")?.addEventListener("click", () => {
+    if (!STATE.mdProgSelfDraft) STATE.mdProgSelfDraft = currentMdProgDraft();
+    if (!navigator.geolocation) {
+      STATE.mdProgSelfDraft.locationStatus = "error";
+      STATE.mdProgSelfDraft.locationError = "This device/browser doesn't support location capture.";
+      render();
+      return;
+    }
+    STATE.mdProgSelfDraft.locationStatus = "capturing";
+    STATE.mdProgSelfDraft.locationError = "";
+    render();
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        if (!STATE.mdProgSelfDraft) return;
+        STATE.mdProgSelfDraft.location = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy, capturedAt: new Date().toISOString() };
+        STATE.mdProgSelfDraft.locationStatus = "success";
+        STATE.mdProgSelfDraft.locationError = "";
+        render();
+      },
+      (err) => {
+        if (!STATE.mdProgSelfDraft) return;
+        const messages = {
+          1: "Location permission denied. Please allow location access for this site, then try again.",
+          2: "Location unavailable right now — weak GPS/network signal. Move to an open area and try again.",
+          3: "Location request timed out. Try again, ideally outdoors with a clear sky view.",
+        };
+        STATE.mdProgSelfDraft.locationStatus = "error";
+        STATE.mdProgSelfDraft.locationError = messages[err.code] || "Could not get your location. Please try again.";
+        render();
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 }
+    );
+  });
   $("save-mdprog-self")?.addEventListener("click", async () => {
     const programme = STATE.jmdoMdProgProgramme || MD_PROGRAMME_NAMES[0];
     const key = mdProgKey(STATE.name, programme);
@@ -3866,6 +4094,8 @@ function attachHandlers() {
       target, targetMonth: locked ? existing.targetMonth : (target ? currentMonth() : existing.targetMonth),
       assignedDate: existing.assignedDate || todayStr(),
       achieved, farmers, lastDate,
+      photo: d.photo !== undefined ? d.photo : (existing.photo || null),
+      location: d.location !== undefined ? d.location : (existing.location || null),
       remarks: existing.remarks || "", reviewStatus: existing.reviewStatus || MD_PROG_REVIEW_STATUSES[0],
       updatedAt: new Date().toISOString(),
     }};
