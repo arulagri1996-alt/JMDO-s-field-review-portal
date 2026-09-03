@@ -125,12 +125,29 @@
     border-radius: 10px; padding: 10px 12px; font-size: 12.5px; line-height: 1.4;
   }
 
-  .pill-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
-  .pill {
-    border-radius: 999px; padding: 7px 13px; font-size: 12px; font-weight: 700;
-    border: 1.5px solid #DCE7B6; background: white; color: #4B5D26; cursor: pointer;
+  .tab-groups {
+    background: rgba(255,255,255,0.94); backdrop-filter: blur(6px);
+    border-radius: 18px; padding: 14px 16px 16px; margin-bottom: 18px;
+    box-shadow: 0 10px 28px rgba(34,48,14,0.12); border: 1px solid rgba(220,231,182,0.6);
   }
-  .pill.active { background: #22300E; color: #F3E9C7; border-color: #22300E; }
+  .tab-group-label {
+    font-size: 10.5px; font-weight: 800; letter-spacing: 0.09em; text-transform: uppercase;
+    color: #96895D; margin: 12px 2px 7px;
+  }
+  .tab-group-label:first-child { margin-top: 2px; }
+  .pill-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 0; }
+  .pill {
+    border-radius: 999px; padding: 8px 15px; font-size: 12.5px; font-weight: 700;
+    border: 1.5px solid #E4EBC8; background: #FBFAF2; color: #4B5D26; cursor: pointer;
+    transition: transform 0.12s ease, box-shadow 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  .pill:hover { border-color: #B9CE85; box-shadow: 0 3px 10px rgba(93,138,34,0.14); transform: translateY(-1px); }
+  .pill.active {
+    background: linear-gradient(120deg, #3E5C17, #5D8A22); color: #F6F1DC; border-color: #3E5C17;
+    box-shadow: 0 4px 14px rgba(62,92,23,0.35);
+  }
+  .pill.active:hover { transform: none; }
 
   .badge { display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; padding: 3px 9px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.02em; }
   .badge.good { background: #DCEAB2; color: #3E5C17; }
@@ -418,6 +435,19 @@ async function loadShared(key, fallback) {
 }
 async function saveShared(key, value) {
   try { await window.storage.set(key, JSON.stringify(value), true); return true; } catch { return false; }
+}
+// Every save handler that edits one entry inside a shared dictionary (attendance, targets,
+// SPCM, soil, MD programmes, farmers, profiles...) must not trust this browser's local copy of
+// that dictionary — it may be hours old if the tab has been open a while. Fetching the current
+// version from Firebase right before merging keeps the "stale window" down to a single
+// round-trip (milliseconds) instead of an entire session, so one person's save can no longer
+// silently erase another person's concurrent entries.
+async function mergeFreshAndPersist(storageKey, stateField, updater) {
+  const latest = await loadShared(storageKey, {});
+  const next = updater(latest);
+  STATE[stateField] = next;
+  await saveShared(storageKey, next);
+  return next;
 }
 async function loadDevice(fallback) {
   try { const r = await window.storage.get(DEVICE_KEY, false); return r ? JSON.parse(r.value) : fallback; } catch { return fallback; }
@@ -729,8 +759,9 @@ async function persistEntries(next) { STATE.entries = next; await saveShared(ENT
 // Sets an order's MO-confirmation status without touching any other field on it. Kept separate
 // from persistEntries so every caller doesn't need to reconstruct the whole entries array by hand.
 async function setOrderConfirmStatus(id, status) {
-  const next = STATE.entries.map(e => e.id === id ? { ...e, moConfirmStatus: status, moConfirmedAt: new Date().toISOString() } : e);
-  await persistEntries(next);
+  await mergeFreshAndPersist(ENTRIES_KEY, "entries", (latest) =>
+    latest.map(e => e.id === id ? { ...e, moConfirmStatus: status, moConfirmedAt: new Date().toISOString() } : e)
+  );
 }
 async function persistProfiles(next) { STATE.profiles = next; await saveShared(PROFILES_KEY, next); }
 async function persistFarmers(next) { STATE.farmers = next; await saveShared(FARMERS_KEY, next); }
@@ -1347,14 +1378,21 @@ function jmdoViewHTML() {
       </div>` : `<div style="margin-top:10px;font-size:12px;color:#D8E6B0;">No monthly target set for you yet by your manager.</div>`}
     </div>
 
-    <div class="pill-row" style="margin-top:14px;">
-      <button type="button" class="pill ${STATE.jmdoTab === "attendance" ? "active" : ""}" data-jmdo-tab="attendance">🕗 Attendance</button>
-      <button type="button" class="pill ${STATE.jmdoTab === "sales" ? "active" : ""}" data-jmdo-tab="sales">📦 Sales Order</button>
-      <button type="button" class="pill ${STATE.jmdoTab === "spcm" ? "active" : ""}" data-jmdo-tab="spcm">🎯 SPCM Target/Ach</button>
-      <button type="button" class="pill ${STATE.jmdoTab === "soil" ? "active" : ""}" data-jmdo-tab="soil">🧪 Soil Sample</button>
-      <button type="button" class="pill ${STATE.jmdoTab === "mdprog" ? "active" : ""}" data-jmdo-tab="mdprog">🎯 MD Programmes</button>
-      <button type="button" class="pill ${STATE.jmdoTab === "tracking" ? "active" : ""}" data-jmdo-tab="tracking">📍 Live Tracking</button>
-      <button type="button" class="pill ${STATE.jmdoTab === "farmers" ? "active" : ""}" data-jmdo-tab="farmers">🌾 Farmers Data</button>
+    <div class="tab-groups" style="margin-top:14px;">
+      <div class="tab-group-label">📋 Daily Work</div>
+      <div class="pill-row">
+        <button type="button" class="pill ${STATE.jmdoTab === "attendance" ? "active" : ""}" data-jmdo-tab="attendance">🕗 Attendance</button>
+        <button type="button" class="pill ${STATE.jmdoTab === "sales" ? "active" : ""}" data-jmdo-tab="sales">📦 Sales Order</button>
+        <button type="button" class="pill ${STATE.jmdoTab === "spcm" ? "active" : ""}" data-jmdo-tab="spcm">🎯 SPCM Target/Ach</button>
+        <button type="button" class="pill ${STATE.jmdoTab === "soil" ? "active" : ""}" data-jmdo-tab="soil">🧪 Soil Sample</button>
+        <button type="button" class="pill ${STATE.jmdoTab === "mdprog" ? "active" : ""}" data-jmdo-tab="mdprog">🎯 MD Programmes</button>
+      </div>
+
+      <div class="tab-group-label">🌾 Field Ops</div>
+      <div class="pill-row">
+        <button type="button" class="pill ${STATE.jmdoTab === "tracking" ? "active" : ""}" data-jmdo-tab="tracking">📍 Live Tracking</button>
+        <button type="button" class="pill ${STATE.jmdoTab === "farmers" ? "active" : ""}" data-jmdo-tab="farmers">🌾 Farmers Data</button>
+      </div>
     </div>
 
     ${STATE.jmdoTab === "attendance" ? attendanceJmdoCardHTML(profile) :
@@ -2200,18 +2238,29 @@ function rmViewHTML() {
     <div class="eyebrow">MDO / MO Review</div>
     <h1 class="pagetitle">Team progress</h1>
 
-    <div class="pill-row">
-      <button type="button" class="pill ${STATE.rmTab === "dashboard" ? "active" : ""}" data-rm-tab="dashboard">📊 Dashboard</button>
-      <button type="button" class="pill ${STATE.rmTab === "attendance" ? "active" : ""}" data-rm-tab="attendance">🕗 Attendance</button>
-      <button type="button" class="pill ${STATE.rmTab === "sales" ? "active" : ""}" data-rm-tab="sales">📦 Sales Order</button>
-      <button type="button" class="pill ${STATE.rmTab === "spcm" ? "active" : ""}" data-rm-tab="spcm">🎯 SPCM Target/Ach</button>
-      <button type="button" class="pill ${STATE.rmTab === "soil" ? "active" : ""}" data-rm-tab="soil">🧪 Soil Sample</button>
-      <button type="button" class="pill ${STATE.rmTab === "mdprog" ? "active" : ""}" data-rm-tab="mdprog">🎯 MD Programmes</button>
-      <button type="button" class="pill ${STATE.rmTab === "live" ? "active" : ""}" data-rm-tab="live">🛰️ Live Map</button>
-      <button type="button" class="pill ${STATE.rmTab === "farmers" ? "active" : ""}" data-rm-tab="farmers">🌾 Farmers Data</button>
-      <button type="button" class="pill ${STATE.rmTab === "roster" ? "active" : ""}" data-rm-tab="roster">👥 Manage JMDOs</button>
-      <button type="button" class="pill ${STATE.rmTab === "momdo" ? "active" : ""}" data-rm-tab="momdo">🧑‍💼 Manage MO/MDO</button>
-      <button type="button" class="pill ${STATE.rmTab === "catalog" ? "active" : ""}" data-rm-tab="catalog">🏷️ Products &amp; Dealers</button>
+    <div class="tab-groups">
+      <div class="tab-group-label">📊 Reports</div>
+      <div class="pill-row">
+        <button type="button" class="pill ${STATE.rmTab === "dashboard" ? "active" : ""}" data-rm-tab="dashboard">📊 Dashboard</button>
+        <button type="button" class="pill ${STATE.rmTab === "attendance" ? "active" : ""}" data-rm-tab="attendance">🕗 Attendance</button>
+        <button type="button" class="pill ${STATE.rmTab === "sales" ? "active" : ""}" data-rm-tab="sales">📦 Sales Order</button>
+        <button type="button" class="pill ${STATE.rmTab === "spcm" ? "active" : ""}" data-rm-tab="spcm">🎯 SPCM Target/Ach</button>
+        <button type="button" class="pill ${STATE.rmTab === "soil" ? "active" : ""}" data-rm-tab="soil">🧪 Soil Sample</button>
+        <button type="button" class="pill ${STATE.rmTab === "mdprog" ? "active" : ""}" data-rm-tab="mdprog">🎯 MD Programmes</button>
+      </div>
+
+      <div class="tab-group-label">🌾 Field Ops</div>
+      <div class="pill-row">
+        <button type="button" class="pill ${STATE.rmTab === "live" ? "active" : ""}" data-rm-tab="live">🛰️ Live Map</button>
+        <button type="button" class="pill ${STATE.rmTab === "farmers" ? "active" : ""}" data-rm-tab="farmers">🌾 Farmers Data</button>
+      </div>
+
+      <div class="tab-group-label">⚙️ Admin</div>
+      <div class="pill-row">
+        <button type="button" class="pill ${STATE.rmTab === "roster" ? "active" : ""}" data-rm-tab="roster">👥 Manage JMDOs</button>
+        <button type="button" class="pill ${STATE.rmTab === "momdo" ? "active" : ""}" data-rm-tab="momdo">🧑‍💼 Manage MO/MDO</button>
+        <button type="button" class="pill ${STATE.rmTab === "catalog" ? "active" : ""}" data-rm-tab="catalog">🏷️ Products &amp; Dealers</button>
+      </div>
     </div>
 
     ${STATE.rmTab === "dashboard" ? dashboardHTML() : STATE.rmTab === "attendance" ? attendanceReviewHTML() : STATE.rmTab === "spcm" ? spcmReviewHTML() : STATE.rmTab === "soil" ? soilReviewHTML() : STATE.rmTab === "mdprog" ? mdProgReviewHTML() : STATE.rmTab === "live" ? liveMapReviewHTML() : STATE.rmTab === "farmers" ? farmersReviewHTML() : STATE.rmTab === "roster" ? rosterManageHTML() : STATE.rmTab === "momdo" ? momdoManageHTML() : STATE.rmTab === "catalog" ? catalogManageHTML() : `
@@ -3147,8 +3196,7 @@ function attachHandlers() {
     btn.addEventListener("click", async () => {
       const pickedName = btn.getAttribute("data-pick-momdo");
       STATE.momdoDropdownOpen = false; STATE.momdoQuery = "";
-      const next = { ...STATE.profiles, [STATE.name]: { ...(STATE.profiles[STATE.name] || {}), rmName: pickedName } };
-      await persistProfiles(next);
+      await mergeFreshAndPersist(PROFILES_KEY, "profiles", (latest) => ({ ...latest, [STATE.name]: { ...(latest[STATE.name] || {}), rmName: pickedName } }));
       render();
     });
   });
@@ -3173,12 +3221,12 @@ function attachHandlers() {
   });
 
   $("save-profile")?.addEventListener("click", async () => {
-    const next = { ...STATE.profiles, [STATE.name]: {
+    const record = {
       state: $("p-state").value.trim(), region: $("p-region").value.trim(), moHQ: $("p-mohq").value.trim(),
       jmdoHQ: $("p-jmdohq").value.trim(), district: $("p-district").value.trim(),
       rmName: ($("p-rmname")?.value ?? (STATE.profiles[STATE.name] || {}).rmName ?? "").trim(),
-    }};
-    await persistProfiles(next);
+    };
+    await mergeFreshAndPersist(PROFILES_KEY, "profiles", (latest) => ({ ...latest, [STATE.name]: record }));
     STATE.showProfileEdit = false;
     render();
   });
@@ -3231,7 +3279,7 @@ function attachHandlers() {
       // not just typed by the JMDO.
       moConfirmStatus: "Pending", moConfirmedAt: null,
     };
-    await persistEntries([entry, ...STATE.entries]);
+    await mergeFreshAndPersist(ENTRIES_KEY, "entries", (latest) => [entry, ...latest]);
     STATE.jmdoForm = freshJmdoForm();
     STATE.justSubmitted = true;
     render();
@@ -3296,8 +3344,7 @@ function attachHandlers() {
     if (!name?.trim() || !qty) { alert("Pick a JMDO Name (Region → MO H.Q → JMDO H.Q → Name) and enter a target quantity."); return; }
     const mk = currentMonth();
     if ((STATE.targets[mk] || {})[name] != null) { alert(`This JMDO's target for ${monthLabel(mk)} is already set and locked. Use \"Unlock & revise\" to change it.`); return; }
-    const next = { ...STATE.targets, [mk]: { ...(STATE.targets[mk] || {}), [name.trim()]: Number(qty) } };
-    await persistTargets(next);
+    await mergeFreshAndPersist(TARGETS_KEY, "targets", (latest) => ({ ...latest, [mk]: { ...(latest[mk] || {}), [name.trim()]: Number(qty) } }));
     STATE.rmTargetForm = { region: "", moHQ: "", jmdoHQ: "", name: "", qty: "" };
     render();
   });
@@ -3306,10 +3353,11 @@ function attachHandlers() {
     if (!n) return;
     if (!confirm(`Unlock ${n}'s ${monthLabel(currentMonth())} target for revision? This is an admin override — the target is normally fixed for the month.`)) return;
     const mk = currentMonth();
-    const monthT = { ...(STATE.targets[mk] || {}) };
-    delete monthT[n];
-    const next = { ...STATE.targets, [mk]: monthT };
-    await persistTargets(next);
+    await mergeFreshAndPersist(TARGETS_KEY, "targets", (latest) => {
+      const monthT = { ...(latest[mk] || {}) };
+      delete monthT[n];
+      return { ...latest, [mk]: monthT };
+    });
     render();
   });
   document.querySelectorAll("[data-remove-target]").forEach(btn => {
@@ -3317,10 +3365,11 @@ function attachHandlers() {
       if (!confirm("Remove this saved monthly target? This is an admin override of the monthly lock.")) return;
       const n = btn.getAttribute("data-remove-target");
       const mk = currentMonth();
-      const monthT = { ...(STATE.targets[mk] || {}) };
-      delete monthT[n];
-      const next = { ...STATE.targets, [mk]: monthT };
-      await persistTargets(next);
+      await mergeFreshAndPersist(TARGETS_KEY, "targets", (latest) => {
+        const monthT = { ...(latest[mk] || {}) };
+        delete monthT[n];
+        return { ...latest, [mk]: monthT };
+      });
       render();
     });
   });
@@ -3436,7 +3485,7 @@ function attachHandlers() {
       // confirm/reject step needed, unlike orders a JMDO submits themselves.
       moConfirmStatus: "Confirmed", moConfirmedAt: new Date().toISOString(),
     };
-    await persistEntries([entry, ...STATE.entries]);
+    await mergeFreshAndPersist(ENTRIES_KEY, "entries", (latest) => [entry, ...latest]);
     STATE.rmSalesForm = freshRmSalesForm();
     STATE.rmDealerManual = false; STATE.rmProductManual = false;
     STATE.rmSalesJustSaved = true;
@@ -3494,8 +3543,7 @@ function attachHandlers() {
       createdAt: prior?.createdAt || Date.now(),
       updatedAt: editId ? Date.now() : undefined,
     };
-    const next = { ...STATE.farmers, [id]: entry };
-    await persistFarmers(next);
+    await mergeFreshAndPersist(FARMERS_KEY, "farmers", (latest) => ({ ...latest, [id]: entry }));
     STATE.farmerForm = { ...freshFarmerForm(), moHQ: f.moHQ || "" };
     STATE.farmerEditId = null;
     render();
@@ -3544,9 +3592,11 @@ function attachHandlers() {
   $("confirm-delete-farmer-yes")?.addEventListener("click", async () => {
     const id = STATE.confirmDeleteFarmerId;
     if (!id) return;
-    const next = { ...STATE.farmers };
-    delete next[id];
-    await persistFarmers(next);
+    await mergeFreshAndPersist(FARMERS_KEY, "farmers", (latest) => {
+      const next = { ...latest };
+      delete next[id];
+      return next;
+    });
     if (STATE.farmerEditId === id) { STATE.farmerEditId = null; STATE.farmerForm = freshFarmerForm(); }
     STATE.confirmDeleteFarmerId = null;
     render();
@@ -3641,8 +3691,7 @@ function attachHandlers() {
   $("confirm-import-farmers-yes")?.addEventListener("click", async () => {
     const pending = STATE.pendingFarmerImport;
     if (!pending) return;
-    const next = { ...STATE.farmers, ...pending.additions };
-    await persistFarmers(next);
+    await mergeFreshAndPersist(FARMERS_KEY, "farmers", (latest) => ({ ...latest, ...pending.additions }));
     STATE.pendingFarmerImport = null;
     STATE.farmerImportMsg = `✅ Imported ${pending.imported} farmer entr${pending.imported === 1 ? "y" : "ies"} successfully.`;
     render();
@@ -3917,14 +3966,14 @@ function attachHandlers() {
     // Once a record already exists, keep its original on-time/late flag rather than re-evaluating
     // against the current time on every edit. Entries for a different (earlier) date are never "late".
     const isLate = date === today ? (existing ? !!existing.isLate : isPastAttendanceDeadline(now)) : false;
-    const next = { ...STATE.attendance, [key]: {
+    const record = {
       name: STATE.name, date,
       region: profile.region || rosterRow?.region || "", moHQ: profile.moHQ || "", jmdoHQ: profile.jmdoHQ || rosterRow?.hq || "",
       place, status, isLate, location,
       firstSubmittedAt: existing?.firstSubmittedAt || now.toISOString(),
       updatedAt: now.toISOString(),
-    }};
-    await persistAttendance(next);
+    };
+    await mergeFreshAndPersist(ATTENDANCE_KEY, "attendance", (latest) => ({ ...latest, [key]: record }));
     STATE.attendanceSelfDraft = null;
     render();
   });
@@ -3948,13 +3997,13 @@ function attachHandlers() {
     if (!target && !ach) { alert("Enter a Target or an Achievement value."); return; }
     const profile = STATE.profiles[STATE.name] || {};
     const rosterRow = ROSTER.find(r => r.name === STATE.name);
-    const next = { ...STATE.spcm, [STATE.name]: {
+    const record = {
       region: profile.region || rosterRow?.region || "", moHQ: profile.moHQ || "", jmdoHQ: profile.jmdoHQ || rosterRow?.hq || "",
       target, ach, lastDate,
       targetYear: locked ? existing.targetYear : (target ? currentYearKey() : existing.targetYear),
       updatedAt: new Date().toISOString(),
-    }};
-    await persistSpcm(next);
+    };
+    await mergeFreshAndPersist(SPCM_KEY, "spcm", (latest) => ({ ...latest, [STATE.name]: record }));
     STATE.spcmSelfDraft = null;
     render();
   });
@@ -3977,13 +4026,13 @@ function attachHandlers() {
     if (!freeTarget && !paidTarget && !freeAch && !paidAch) { alert("Enter at least one target or achievement value."); return; }
     const profile = STATE.profiles[STATE.name] || {};
     const rosterRow = ROSTER.find(r => r.name === STATE.name);
-    const next = { ...STATE.soil, [STATE.name]: {
+    const record = {
       region: profile.region || rosterRow?.region || "", moHQ: profile.moHQ || "", jmdoHQ: profile.jmdoHQ || rosterRow?.hq || "",
       freeTarget, freeAch, paidTarget, paidAch, lastDate,
       targetYear: soilLocked ? existingSoil.targetYear : ((freeTarget || paidTarget) ? currentYearKey() : existingSoil.targetYear),
       updatedAt: new Date().toISOString(),
-    }};
-    await persistSoil(next);
+    };
+    await mergeFreshAndPersist(SOIL_KEY, "soil", (latest) => ({ ...latest, [STATE.name]: record }));
     STATE.soilSelfDraft = null;
     render();
   });
@@ -4088,7 +4137,7 @@ function attachHandlers() {
     const rosterRow = ROSTER.find(r => r.name === STATE.name);
     const conflict = !locked ? findConflictingMdProgAssignment(STATE.name, programme, place, currentMonth(), key) : null;
     if (conflict && !confirm(`${STATE.name} already has a "${programme}" assignment at "${conflict[1].place}" for ${monthLabel(currentMonth())}. Save this as an additional place anyway?`)) return;
-    const next = { ...STATE.mdProg, [key]: {
+    const record = {
       name: STATE.name, programme, place,
       region: profile.region || rosterRow?.region || "", moHQ: profile.moHQ || "", jmdoHQ: profile.jmdoHQ || rosterRow?.hq || "",
       target, targetMonth: locked ? existing.targetMonth : (target ? currentMonth() : existing.targetMonth),
@@ -4098,8 +4147,8 @@ function attachHandlers() {
       location: d.location !== undefined ? d.location : (existing.location || null),
       remarks: existing.remarks || "", reviewStatus: existing.reviewStatus || MD_PROG_REVIEW_STATUSES[0],
       updatedAt: new Date().toISOString(),
-    }};
-    await persistMdProg(next);
+    };
+    await mergeFreshAndPersist(MDPROG_KEY, "mdProg", (latest) => ({ ...latest, [key]: record }));
     STATE.mdProgSelfDraft = null;
     render();
   });
@@ -4126,13 +4175,13 @@ function attachHandlers() {
     const existingRec = STATE.spcm[f.name];
     const locked = isTargetLockedForYear(existingRec);
     const target = locked ? Number(existingRec.target) : Number(f.target) || 0;
-    const next = { ...STATE.spcm, [f.name]: {
+    const record = {
       region: f.region || "", moHQ: f.moHQ || "", jmdoHQ: f.jmdoHQ || "",
       target, ach: Number(f.ach) || 0, lastDate: f.lastDate || todayStr(),
       targetYear: locked ? existingRec.targetYear : (target ? currentYearKey() : existingRec?.targetYear),
       updatedAt: new Date().toISOString(),
-    }};
-    await persistSpcm(next);
+    };
+    await mergeFreshAndPersist(SPCM_KEY, "spcm", (latest) => ({ ...latest, [f.name]: record }));
     STATE.rmSpcmForm = { region: "", moHQ: "", jmdoHQ: "", name: "", target: "", ach: "", lastDate: "" };
     render();
   });
@@ -4141,8 +4190,7 @@ function attachHandlers() {
     if (!n) return;
     const rec = STATE.spcm[n];
     if (!confirm(`Unlock ${n}'s ${rec?.targetYear || currentYearKey()} SPCM target for revision? This is an admin override — targets are normally fixed for the annual cycle.`)) return;
-    const next = { ...STATE.spcm, [n]: { ...rec, targetYear: null } };
-    await persistSpcm(next);
+    await mergeFreshAndPersist(SPCM_KEY, "spcm", (latest) => ({ ...latest, [n]: { ...(latest[n] || rec), targetYear: null } }));
     render();
   });
   $("spcm-search")?.addEventListener("input", (e) => { STATE.rmSpcmSearch = e.target.value; renderKeepFocus("spcm-search"); });
@@ -4196,14 +4244,14 @@ function attachHandlers() {
     const locked = isSoilLockedForYear(existingRec);
     const freeTarget = locked ? Number(existingRec.freeTarget) : Number(f.freeTarget) || 0;
     const paidTarget = locked ? Number(existingRec.paidTarget) : Number(f.paidTarget) || 0;
-    const next = { ...STATE.soil, [f.name]: {
+    const record = {
       region: f.region || "", moHQ: f.moHQ || "", jmdoHQ: f.jmdoHQ || "",
       freeTarget, freeAch: Number(f.freeAch) || 0, paidTarget, paidAch: Number(f.paidAch) || 0,
       lastDate: f.lastDate || todayStr(),
       targetYear: locked ? existingRec.targetYear : ((freeTarget || paidTarget) ? currentYearKey() : existingRec?.targetYear),
       updatedAt: new Date().toISOString(),
-    }};
-    await persistSoil(next);
+    };
+    await mergeFreshAndPersist(SOIL_KEY, "soil", (latest) => ({ ...latest, [f.name]: record }));
     STATE.rmSoilForm = { region: "", moHQ: "", jmdoHQ: "", name: "", freeTarget: "", freeAch: "", paidTarget: "", paidAch: "", lastDate: "" };
     render();
   });
@@ -4212,8 +4260,7 @@ function attachHandlers() {
     if (!n) return;
     const rec = STATE.soil[n];
     if (!confirm(`Unlock ${n}'s ${rec?.targetYear || currentYearKey()} Soil Sample target for revision? This is an admin override — targets are normally fixed for the annual cycle.`)) return;
-    const next = { ...STATE.soil, [n]: { ...rec, targetYear: null } };
-    await persistSoil(next);
+    await mergeFreshAndPersist(SOIL_KEY, "soil", (latest) => ({ ...latest, [n]: { ...(latest[n] || rec), targetYear: null } }));
     render();
   });
   $("soil-search")?.addEventListener("input", (e) => { STATE.rmSoilSearch = e.target.value; renderKeepFocus("soil-search"); });
@@ -4283,16 +4330,17 @@ function attachHandlers() {
       const conflict = findConflictingMdProgAssignment(f.name, f.programme, place, targetMonth, key);
       if (conflict && !confirm(`${f.name} already has a "${f.programme}" assignment at "${conflict[1].place}" for ${monthLabel(targetMonth)}. Save this as an additional Place assignment anyway?`)) return;
     }
-    const next = { ...STATE.mdProg, [key]: {
+    const record = {
       name: f.name, programme: f.programme, place,
       region: f.region || "", moHQ: f.moHQ || "", jmdoHQ: f.jmdoHQ || "",
       target, targetMonth,
       assignedDate: existingRec?.assignedDate || todayStr(),
       achieved: Number(f.achieved) || 0, farmers: Number(f.farmers) || 0, lastDate: f.lastDate || todayStr(),
+      photo: existingRec?.photo || null, location: existingRec?.location || null,
       remarks: f.remarks || "", reviewStatus: f.reviewStatus || MD_PROG_REVIEW_STATUSES[0],
       updatedAt: new Date().toISOString(),
-    }};
-    await persistMdProg(next);
+    };
+    await mergeFreshAndPersist(MDPROG_KEY, "mdProg", (latest) => ({ ...latest, [key]: record }));
     STATE.rmMdProgForm = { region: "", moHQ: "", jmdoHQ: "", name: "", programme: MD_PROGRAMME_NAMES[0], place: "", target: "", achieved: "", farmers: "", lastDate: "", remarks: "", reviewStatus: MD_PROG_REVIEW_STATUSES[0] };
     render();
   });
@@ -4301,8 +4349,7 @@ function attachHandlers() {
     if (!key) return;
     const rec = STATE.mdProg[key];
     if (!confirm(`Unlock ${rec?.name}'s ${monthLabel(rec?.targetMonth || currentMonth())} target for "${rec?.programme}" for revision? This is an admin override — targets are normally fixed for the month.`)) return;
-    const next = { ...STATE.mdProg, [key]: { ...rec, targetMonth: null } };
-    await persistMdProg(next);
+    await mergeFreshAndPersist(MDPROG_KEY, "mdProg", (latest) => ({ ...latest, [key]: { ...(latest[key] || rec), targetMonth: null } }));
     render();
   });
   $("mdprog-search")?.addEventListener("input", (e) => { STATE.rmMdProgSearch = e.target.value; renderKeepFocus("mdprog-search"); });
